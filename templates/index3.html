@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>실시간 채팅 감성분석</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.0/chart.min.js"></script>
+    <style>
+        body {
+            font-family: 'Noto Sans KR', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .chat-container {
+            height: 600px;
+            overflow-y: auto;
+        }
+
+        .chat-message {
+            display: flex;
+            align-items: start;
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 8px;
+            background: #f8f9fa;
+        }
+
+        .profile-img {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            margin-right: 10px;
+        }
+
+        .message-content {
+            flex-grow: 1;
+        }
+
+        .author-name {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .message-text {
+            margin-bottom: 5px;
+        }
+
+        .sentiment-indicator {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-top: 5px;
+        }
+
+        .sentiment-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            color: white;
+        }
+
+        .confidence-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            background-color: #e9ecef;
+            color: #495057;
+        }
+
+        .stats-container {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin-bottom: 20px;
+        }
+
+        .title {
+            font-size: 1.2em;
+            font-weight: bold;
+            margin-bottom: 15px;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <!-- 왼쪽 패널: 채팅 메시지 -->
+        <div class="card">
+            <div class="title">실시간 채팅</div>
+            <div id="chat-container" class="chat-container"></div>
+        </div>
+
+        <!-- 오른쪽 패널: 통계 및 차트 -->
+        <div class="card">
+            <div class="title">감성분석 대시보드</div>
+            
+            <!-- 통계 카드 -->
+            <div class="stats-container">
+                <div class="stat-card">
+                    <div>전체 메시지</div>
+                    <div id="total-messages" class="stat-value">0</div>
+                </div>
+                <div class="stat-card">
+                    <div>긍정 비율</div>
+                    <div id="positive-ratio" class="stat-value">0%</div>
+                </div>
+                <div class="stat-card">
+                    <div>평균 신뢰도</div>
+                    <div id="avg-confidence" class="stat-value">0%</div>
+                </div>
+            </div>
+
+            <!-- 감성 분포 차트 -->
+            <div class="chart-container">
+                <canvas id="distributionChart"></canvas>
+            </div>
+
+            <!-- 실시간 감성 트렌드 차트 -->
+            <div class="chart-container">
+                <canvas id="trendChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        const chatContainer = document.getElementById('chat-container');
+        const totalMessages = document.getElementById('total-messages');
+        const positiveRatio = document.getElementById('positive-ratio');
+        const avgConfidence = document.getElementById('avg-confidence');
+        
+        // 차트 초기화
+        const distributionCtx = document.getElementById('distributionChart').getContext('2d');
+        const trendCtx = document.getElementById('trendChart').getContext('2d');
+        
+        // 감성 분포 차트
+        const distributionChart = new Chart(distributionCtx, {
+            type: 'bar',
+            data: {
+                labels: ['부정', '중립', '긍정'],
+                datasets: [{
+                    label: '감성 분포',
+                    data: [0, 0, 0],
+                    backgroundColor: [
+                        'rgba(255, 99, 132, 0.7)',
+                        'rgba(255, 205, 86, 0.7)',
+                        'rgba(75, 192, 192, 0.7)'
+                    ]
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: '감성 분포'
+                    }
+                }
+            }
+        });
+
+        // 감성 트렌드 차트
+        const trendChart = new Chart(trendCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: '긍정',
+                    data: [],
+                    borderColor: 'rgba(75, 192, 192, 1)',
+                    tension: 0.1
+                }, {
+                    label: '중립',
+                    data: [],
+                    borderColor: 'rgba(255, 205, 86, 1)',
+                    tension: 0.1
+                }, {
+                    label: '부정',
+                    data: [],
+                    borderColor: 'rgba(255, 99, 132, 1)',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: '실시간 감성 트렌드'
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 1
+                    }
+                }
+            }
+        });
+
+        let messageCount = 0;
+        let positiveCount = 0;
+        let confidenceSum = 0;
+        let sentimentCounts = {
+            '부정': 0,
+            '중립': 0,
+            '긍정': 0
+        };
+
+        function getSentimentColor(sentiment) {
+            const colors = {
+                '긍정': '#4caf50',
+                '중립': '#ffd700',
+                '부정': '#f44336'
+            };
+            return colors[sentiment] || '#757575';
+        }
+
+        function updateStats() {
+            totalMessages.textContent = messageCount;
+            positiveRatio.textContent = `${((positiveCount / messageCount) * 100).toFixed(1)}%`;
+            avgConfidence.textContent = `${((confidenceSum / messageCount) * 100).toFixed(1)}%`;
+        }
+
+        function updateDistributionChart() {
+            distributionChart.data.datasets[0].data = [
+                sentimentCounts['부정'],
+                sentimentCounts['중립'],
+                sentimentCounts['긍정']
+            ];
+            distributionChart.update();
+        }
+
+        socket.on('chat_message', function(data) {
+            console.log('Received message:', data);  // 디버깅용 로그
+
+            // 채팅 메시지 추가
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'chat-message';
+            
+            messageDiv.innerHTML = `
+                <img src="${data.profile_image_url}" class="profile-img" alt="프로필">
+                <div class="message-content">
+                    <div class="author-name">${data.author}</div>
+                    <div class="message-text">${data.message}</div>
+                    <div class="sentiment-indicator">
+                        <span class="sentiment-badge" style="background-color: ${getSentimentColor(data.sentiment)}">
+                            ${data.sentiment}
+                        </span>
+                        <span class="confidence-badge">
+                            신뢰도: ${(data.confidence * 100).toFixed(1)}%
+                        </span>
+                    </div>
+                </div>
+            `;
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+
+            // 통계 업데이트
+            messageCount++;
+            if (data.sentiment === '긍정') positiveCount++;
+            confidenceSum += data.confidence;
+            sentimentCounts[data.sentiment]++;
+            
+            updateStats();
+            updateDistributionChart();
+
+            // 트렌드 차트 업데이트
+            if (trendChart.data.labels.length > 20) {
+                trendChart.data.labels.shift();
+                trendChart.data.datasets.forEach(dataset => dataset.data.shift());
+            }
+            
+            const timeLabel = new Date().toLocaleTimeString();
+            trendChart.data.labels.push(timeLabel);
+
+            // 각 감성에 대한 현재 비율 계산
+            const total = Object.values(sentimentCounts).reduce((a, b) => a + b, 0);
+            const positiveRatio = sentimentCounts['긍정'] / total;
+            const neutralRatio = sentimentCounts['중립'] / total;
+            const negativeRatio = sentimentCounts['부정'] / total;
+
+            trendChart.data.datasets[0].data.push(positiveRatio);
+            trendChart.data.datasets[1].data.push(neutralRatio);
+            trendChart.data.datasets[2].data.push(negativeRatio);
+            trendChart.update();
+        });
+    </script>
+</body>
+</html>
